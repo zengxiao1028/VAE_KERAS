@@ -2,6 +2,7 @@ import os
 import numpy as np
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
+import MyConfig
 # def get_pill(pill_images_path='/media/zengxiao/ent/pillcom/dataset/pill201fb'):
 #
 #     images = os.listdir(pill_images_path)
@@ -27,49 +28,47 @@ def read_images_from_disk(input_queue):
       Two tensors: the decoded image, and the string label.
     """
     file_content_0 = tf.read_file(input_queue[0])
-    file_content_1 = tf.read_file(input_queue[1])
     image_0 = tf.image.decode_jpeg(file_content_0)
-    image_1 = tf.image.decode_jpeg(file_content_1)
-    return image_0,image_1
+
+    return image_0
 
 def preprocess(img):
     image = tf.cast(img, tf.float32)
-    image = tf.image.resize_images(image, [128, 128])
+    image = tf.image.resize_images(image, [100, 100])
+    image = image/255.
     image = tf.random_crop(image, [100,100,3])
     return image
 
 def get_batch(pill_images_path='/media/zengxiao/ent/pillcom/dataset/pill201fb',batch_size=64):
 
     image_paths = os.listdir(pill_images_path)
-
-    X_train, X_test = train_test_split(image_paths, test_size=0.1, random_state=0)
+    image_paths = [each for each in image_paths if each.find('#')<0]
 
 
     # Reads pfathes of images together with their labels
-    X_train_list = [os.path.join(pill_images_path, each) for each in X_train]
-    X_test_list = [os.path.join(pill_images_path, each) for each in X_test]
+    X_train_list = [os.path.join(pill_images_path, each) for each in image_paths]
+
 
     X_train = tf.convert_to_tensor(X_train_list, dtype=tf.string)
-    X_test = tf.convert_to_tensor(X_test_list, dtype=tf.string)
+
 
     # Makes an input queue
-    input_queue = tf.train.slice_input_producer([X_train,X_test])
+    input_queue = tf.train.slice_input_producer([X_train])
 
-    X_train, X_test = read_images_from_disk(input_queue)
+    X_train = read_images_from_disk(input_queue)
 
     # Optional Preprocessing or Data Augmentation
     # tf.image implements most of the standard image augmentation
     X_train = preprocess(X_train)
-    X_test  = preprocess(X_test)
+
 
     # Optional Image and Label Batching
-    X_train, X_test = tf.train.batch([X_train, X_test],
-                                              batch_size=batch_size, capacity=256)
+    X_train = tf.train.batch([X_train],batch_size=batch_size, capacity=1024)
 
-    return X_train, X_test
+    return X_train
 
 
 if __name__ == '__main__':
 
-    X_train, X_test = get_batch()
-    print X_test
+    X_train = get_batch(MyConfig.pill_images_path)
+    print X_train

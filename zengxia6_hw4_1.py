@@ -2,14 +2,16 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import tensorflow.contrib.slim as slim
-
+import MyConfig
 import Pill_Generator
+import os
+import logging
 np.random.seed(0)
 tf.set_random_seed(0)
 
-input_dim = 3
+
 batch_size = 128
-latent_dim = 2
+latent_dim = 32
 
 
 
@@ -17,7 +19,8 @@ def create_network():
     #input
     x = tf.placeholder(tf.float32, [None, 100,100,3])
 
-    with slim.arg_scope([slim.convolution2d]):
+    with slim.arg_scope([slim.convolution2d,slim.fully_connected,
+                         slim.convolution2d_transpose],weights_regularizer=slim.l2_regularizer(0.0005)):
         #encoder
         conv1 = slim.repeat(x, 2, slim.conv2d, 32, 3, scope='conv1')
         pool1 = slim.max_pool2d(conv1, 3)
@@ -45,69 +48,84 @@ def create_network():
         decoder_upsample = slim.fully_connected(decoder_fc, 8*8*32)
         decoder_upsample = tf.reshape(decoder_upsample,[-1,8,8,32])
 
-        deconv1 = slim.repeat(decoder_upsample, 2, slim.conv2d_transpose, 64, 3, scope='deconv1', padding='SAME')
-        deconv1_unpool = tf.image.resize_images(deconv1,conv3.get_shape().as_list()[1:3])
+        deconv1_upsample = tf.image.resize_images(decoder_upsample, conv3.get_shape().as_list()[1:3])
+        deconv1 = slim.repeat(deconv1_upsample, 2, slim.conv2d_transpose, 64, 3, scope='deconv1')
 
-        deconv2 = slim.repeat(deconv1_unpool, 2, slim.conv2d_transpose, 32, 3, scope='deconv2', padding='SAME')
-        deconv2_unpool = tf.image.resize_images(deconv2, conv2.get_shape().as_list()[1:3])
+        deconv2_unpool = tf.image.resize_images(deconv1, conv2.get_shape().as_list()[1:3])
+        deconv2 = slim.repeat(deconv2_unpool, 2, slim.conv2d_transpose, 32, 3, scope='deconv2')
 
-        deconv3 = slim.repeat(deconv2_unpool,2, slim.conv2d_transpose, 32, 3, scope='deconv3', padding='SAME')
-        deconv2_unpool = tf.image.resize_images(deconv2, conv2.get_shape().as_list()[1:3])
-
-        decoder_rec_x = slim.fully_connected(decoder_fc, input_dim, scope='dncoder_rec_x',activation_fn=None)
+        deconv3_unpool = tf.image.resize_images(deconv2, conv1.get_shape().as_list()[1:3])
+        deconv3 = slim.convolution2d_transpose(deconv3_unpool,num_outputs=32, kernel_size=3 )
+        deconv3 = slim.convolution2d_transpose(deconv3,num_outputs=3, kernel_size=3,activation_fn=None)
+        rec_x = tf.nn.sigmoid(deconv3)
 
     #loss
-    recon_loss = tf.reduce_sum(tf.squared_difference(x, decoder_rec_x),axis=[1])
-    latent_loss = tf.reduce_sum(0.5 * (tf.square(encoder_mu) + encoder_sigma_square -  tf.log(encoder_sigma_square + 1e-8 ) - 1.0),axis=[1])
-    loss = tf.reduce_mean(recon_loss + latent_loss)
-    return {'x':x,  'loss':loss, 'rec_loss':recon_loss, 'latent_loss':latent_loss,'rec_x':decoder_rec_x}
+    loss = tf.nn.sigmoid_cross_entropy_with_logits(deconv3, x, name=None)
+    #loss = tf.squared_difference(rec_x,x)
+    recon_loss = tf.reduce_mean(tf.reduce_sum(loss,axis=[1,2,3]))
+
+    regularization_loss = tf.add_n(slim.losses.get_regularization_losses())
+
+    latent_loss = tf.reduce_mean(tf.reduce_sum(0.5 * (tf.square(encoder_mu) + encoder_sigma_square -  tf.log(encoder_sigma_square + 1e-8 ) - 1.0),axis=[1]))
+
+    loss = recon_loss + latent_loss + regularization_loss
+
+    return {'x':x,  'loss':loss, 'rec_loss':recon_loss, 'latent_loss':latent_loss,'rec_x':rec_x , 'reg_loss':regularization_loss}
 
 
 
 def train():
 
     ops = create_network()
+    X_train = Pill_Generator.get_batch(MyConfig.pill_images_path, batch_size=batch_size)
     optimizer = tf.train.AdamOptimizer(learning_rate=1e-3).minimize(ops['loss'])
 
-    init = tf.global_variables_initializer()
+    init = tf.initialize_all_variables()
     sess = tf.Session()
     sess.run(init)
 
-    fig = plt.figure(figsize=(10,4))
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    fig = plt.figure(figsize=(10, 4))
     plt.ion()
 
+    i = 0
+    try:
+        while not coord.should_stop():
 
-    xs = []
-    ys = []
+                X_train_images = sess.run(X_train)
 
-    X_train, X_test = Pill_Generator.get_batch(batch_size=batch_size)
-    for i in range(20000):
+                _ = sess.run([optimizer],feed_dict={ops['x']: X_train_images})
 
-        X_train_images = sess.run(X_train)
-        _, cost, rec_loss, latent_loss = sess.run([optimizer, ops['loss'],ops['rec_loss'], ops['latent_loss']], feed_dict={ops['x']: X_train_images})
 
-        if i % 20 == 0 :
-            xs.append(i)
-            ys.append(cost)
+                if i % 50 == 0:
+                    cost, rec_x, rec_loss, latent_loss, reg_loss = sess.run(
+                        [ops['loss'], ops['rec_x'], ops['rec_loss'], ops['latent_loss'], ops['reg_loss']],
+                        feed_dict={ops['x']: X_train_images})
+                    print ('step: %04d' % (i), "cost=", "{:.4f}".format(cost))
+                    print('Rec loss: %.4f   Latent loss: %.4f  Reg loss: %.4f' % ( rec_loss, latent_loss, reg_loss))
+                    plt.subplot(121)
+                    plt.imshow(X_train_images[0])
+                    plt.subplot(122)
+                    plt.imshow(rec_x[0])
+                    plt.pause(0.001)
 
-        if i % 500 == 0:
-            X_test_images = sess.run(X_test)
-            cost, rec_x, rec_loss, latent_loss = sess.run([ops['loss'], ops['rec_x'], ops['rec_loss'], ops['latent_loss']],
-                feed_dict={ops['x']: X_test_images})
-            print ( 'step: %04d' %  (i), "cost=", "{:.4f}".format(cost))
-            print('Rec loss: %.4f   Latent loss: %.4f' % (np.mean(rec_loss),np.mean(latent_loss)))
-            plt.subplot(121)
-            plt.imshow(X_test_images[0])
-            plt.subplot(122)
-            plt.imshow(rec_x[0])
-            plt.pause(0.001)
+                i += 1
 
-    fig.savefig('pill.pdf', bbox_inches='tight')
-    return xs, ys
+    except tf.errors.OutOfRangeError:
+        logging.info('Done training -- epoch limit reached')
+
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
+    coord.join(threads)
+    sess.close()
+
 
 
 if __name__=='__main__':
-
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     xs,ys = train()
 
     fig_2 = plt.figure()

@@ -88,6 +88,7 @@ decoder_deconv_3_upsamp = Deconvolution2D(nb_filters, 2, 2,
                                           border_mode='valid',
                                           subsample=(2, 2),
                                           activation='relu')
+
 decoder_mean_squash = Convolution2D(img_chns, 2, 2,
                                     border_mode='valid',
                                     activation='sigmoid')
