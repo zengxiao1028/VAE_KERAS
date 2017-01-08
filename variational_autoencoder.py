@@ -27,8 +27,7 @@ z_log_var = Dense(latent_dim)(h)
 
 def sampling(args):
     z_mean, z_log_var = args
-    epsilon = K.random_normal(shape=(batch_size, latent_dim), mean=0.,
-                              std=epsilon_std)
+    epsilon = K.random_normal(shape=(batch_size, latent_dim), mean=0., std=epsilon_std)
     return z_mean + K.exp(z_log_var / 2) * epsilon
 
 # note that "output_shape" isn't necessary with the TensorFlow backend
@@ -61,7 +60,7 @@ vae.fit(x_train, x_train,
         shuffle=True,
         nb_epoch=nb_epoch,
         batch_size=batch_size,
-        validation_data=(x_test, x_test))
+        validation_data=(x_test, x_test),verbose=1)
 
 # build a model to project inputs on the latent space
 encoder = Model(x, z_mean)
