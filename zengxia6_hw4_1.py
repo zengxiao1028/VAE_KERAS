@@ -2,37 +2,34 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import tensorflow.contrib.slim as slim
-from mpl_toolkits.mplot3d import Axes3D
 
+import Pill_Generator
 np.random.seed(0)
 tf.set_random_seed(0)
 
 input_dim = 3
-batch_size = 256
+batch_size = 128
 latent_dim = 2
 
-def gen_swiss_roll():
-    a_and_b = np.random.multivariate_normal([10, -10], [[10, -5], [-5, 10]], size=(batch_size))
-    swiss_roll = [( each[0]*np.cos(each[0]),each[1], each[0]*np.sin(each[0]) ) for each in a_and_b]
-    return np.array(swiss_roll)
+
 
 def create_network():
     #input
-    x = tf.placeholder(tf.float32, [None, input_dim])
+    x = tf.placeholder(tf.float32, [None, 100,100,3])
 
     with slim.arg_scope([slim.convolution2d]):
         #encoder
         conv1 = slim.repeat(x, 2, slim.conv2d, 32, 3, scope='conv1')
         pool1 = slim.max_pool2d(conv1, 3)
 
-        conv2 = slim.repeat(pool1,2,slim.conv2d,32,3,scope='conv2')
+        conv2 = slim.repeat(pool1,2,slim.conv2d,64,3,scope='conv2',padding='VALID')
         pool2 = slim.max_pool2d(conv2,3)
 
-        conv3 = slim.repeat(pool2,2,slim.conv2d,32,3,scope='conv3')
-        conv3_flat = slim.flatten(conv3)
+        conv3 = slim.repeat(pool2,2,slim.conv2d,32,3,scope='conv3',padding='VALID')
+        pool3 = slim.max_pool2d(conv3, 3)
+        conv3_flat = slim.flatten(pool3)
 
-        fc1 = slim.fully_connected(conv3_flat, 32)
-        encoder_fc = slim.fully_connected(fc1, 10, activation_fn=None)
+        encoder_fc = slim.fully_connected(conv3_flat, 128)
 
         encoder_mu = slim.fully_connected(encoder_fc, latent_dim, scope='encoder_mu', activation_fn=None)
         encoder_sigma_square = tf.square(slim.fully_connected(encoder_fc, latent_dim, scope='encoder_sigma',
@@ -44,8 +41,19 @@ def create_network():
         z = tf.add(encoder_mu,tf.mul(encoder_sigma, eps))
 
         #decoder
-        conv1 = slim.repeat(x, 2, slim.conv2d, 32, 3, scope='conv1')
-        decoder_fc =  slim.stack(z, slim.fully_connected, [32, 32, 32,32], scope='decoder')
+        decoder_fc = slim.fully_connected(z, 128)
+        decoder_upsample = slim.fully_connected(decoder_fc, 8*8*32)
+        decoder_upsample = tf.reshape(decoder_upsample,[-1,8,8,32])
+
+        deconv1 = slim.repeat(decoder_upsample, 2, slim.conv2d_transpose, 64, 3, scope='deconv1', padding='SAME')
+        deconv1_unpool = tf.image.resize_images(deconv1,conv3.get_shape().as_list()[1:3])
+
+        deconv2 = slim.repeat(deconv1_unpool, 2, slim.conv2d_transpose, 32, 3, scope='deconv2', padding='SAME')
+        deconv2_unpool = tf.image.resize_images(deconv2, conv2.get_shape().as_list()[1:3])
+
+        deconv3 = slim.repeat(deconv2_unpool,2, slim.conv2d_transpose, 32, 3, scope='deconv3', padding='SAME')
+        deconv2_unpool = tf.image.resize_images(deconv2, conv2.get_shape().as_list()[1:3])
+
         decoder_rec_x = slim.fully_connected(decoder_fc, input_dim, scope='dncoder_rec_x',activation_fn=None)
 
     #loss
@@ -67,49 +75,34 @@ def train():
 
     fig = plt.figure(figsize=(10,4))
     plt.ion()
-    ax1 = fig.add_subplot(1,2,1, projection='3d')
-    ax1.view_init(15, 95)
-    plt.show()
-    ax1.set_xlim(-25,25)
-    ax1.set_ylim(-25,25)
-    ax1.set_zlim(-25,25)
-    ax2 = fig.add_subplot(1,2,2, projection='3d')
-    ax2.view_init(15, 95)
-    plt.show()
-    ax2.set_xlim(-25,25)
-    ax2.set_ylim(-25,25)
-    ax2.set_zlim(-25,25)
+
 
     xs = []
     ys = []
-    for i in range(20000):
-        batch_xs  = gen_swiss_roll()
-        # Fit training using batch data
 
-        _ ,cost,rec_x,rec_loss,latent_loss = sess.run([optimizer,ops['loss'],ops['rec_x'], ops['rec_loss'],ops['latent_loss']],feed_dict={ops['x']:batch_xs})
+    X_train, X_test = Pill_Generator.get_batch(batch_size=batch_size)
+    for i in range(20000):
+
+        X_train_images = sess.run(X_train)
+        _, cost, rec_loss, latent_loss = sess.run([optimizer, ops['loss'],ops['rec_loss'], ops['latent_loss']], feed_dict={ops['x']: X_train_images})
 
         if i % 20 == 0 :
             xs.append(i)
             ys.append(cost)
 
         if i % 500 == 0:
+            X_test_images = sess.run(X_test)
+            cost, rec_x, rec_loss, latent_loss = sess.run([ops['loss'], ops['rec_x'], ops['rec_loss'], ops['latent_loss']],
+                feed_dict={ops['x']: X_test_images})
             print ( 'step: %04d' %  (i), "cost=", "{:.4f}".format(cost))
             print('Rec loss: %.4f   Latent loss: %.4f' % (np.mean(rec_loss),np.mean(latent_loss)))
-            ax1.clear()
-            ax1.set_xlim(-25, 25)
-            ax1.set_ylim(-25, 25)
-            ax1.set_zlim(-25, 25)
-            ax1.set_title('Real')
-            ax1.scatter(batch_xs[:,0] ,batch_xs[:,1] ,batch_xs[:,2],c='red')
-            ax2.clear()
-            ax2.set_xlim(-25, 25)
-            ax2.set_ylim(-25, 25)
-            ax2.set_zlim(-25, 25)
-            ax2.set_title('Generated')
-            ax2.scatter(rec_x[:, 0], rec_x[:, 1], rec_x[:, 2],c='blue')
+            plt.subplot(121)
+            plt.imshow(X_test_images[0])
+            plt.subplot(122)
+            plt.imshow(rec_x[0])
             plt.pause(0.001)
 
-    fig.savefig('swissroll.pdf', bbox_inches='tight')
+    fig.savefig('pill.pdf', bbox_inches='tight')
     return xs, ys
 
 
