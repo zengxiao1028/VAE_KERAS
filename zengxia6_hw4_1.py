@@ -17,18 +17,19 @@ latent_dim = 32
 
 def create_network():
     #input
+    global_step = tf.Variable(0, name='global_step', trainable=False)
     x = tf.placeholder(tf.float32, [None, 100,100,3])
 
     with slim.arg_scope([slim.convolution2d,slim.fully_connected,
-                         slim.convolution2d_transpose],weights_regularizer=slim.l2_regularizer(0.0005)):
+                         slim.convolution2d_transpose],weights_regularizer=slim.l2_regularizer(0.001)):
         #encoder
-        conv1 = slim.repeat(x, 2, slim.conv2d, 32, 3, scope='conv1')
+        conv1 = slim.repeat(x, 2, slim.conv2d, 64, 3, scope='conv1')
         pool1 = slim.max_pool2d(conv1, 3)
 
-        conv2 = slim.repeat(pool1,2,slim.conv2d,64,3,scope='conv2',padding='VALID')
+        conv2 = slim.repeat(pool1,2,slim.conv2d,128,3,scope='conv2',padding='VALID')
         pool2 = slim.max_pool2d(conv2,3)
 
-        conv3 = slim.repeat(pool2,2,slim.conv2d,32,3,scope='conv3',padding='VALID')
+        conv3 = slim.repeat(pool2,2,slim.conv2d,128,3,scope='conv3',padding='VALID')
         pool3 = slim.max_pool2d(conv3, 3)
         conv3_flat = slim.flatten(pool3)
 
@@ -45,17 +46,17 @@ def create_network():
 
         #decoder
         decoder_fc = slim.fully_connected(z, 128)
-        decoder_upsample = slim.fully_connected(decoder_fc, 8*8*32)
-        decoder_upsample = tf.reshape(decoder_upsample,[-1,8,8,32])
+        decoder_upsample = slim.fully_connected(decoder_fc, 8*8*128)
+        decoder_upsample = tf.reshape(decoder_upsample,[-1,8,8,128])
 
         deconv1_upsample = tf.image.resize_images(decoder_upsample, conv3.get_shape().as_list()[1:3])
-        deconv1 = slim.repeat(deconv1_upsample, 2, slim.conv2d_transpose, 64, 3, scope='deconv1')
+        deconv1 = slim.repeat(deconv1_upsample, 2, slim.conv2d_transpose, 128, 3, scope='deconv1')
 
         deconv2_unpool = tf.image.resize_images(deconv1, conv2.get_shape().as_list()[1:3])
-        deconv2 = slim.repeat(deconv2_unpool, 2, slim.conv2d_transpose, 32, 3, scope='deconv2')
+        deconv2 = slim.repeat(deconv2_unpool, 2, slim.conv2d_transpose, 128, 3, scope='deconv2')
 
         deconv3_unpool = tf.image.resize_images(deconv2, conv1.get_shape().as_list()[1:3])
-        deconv3 = slim.convolution2d_transpose(deconv3_unpool,num_outputs=32, kernel_size=3 )
+        deconv3 = slim.convolution2d_transpose(deconv3_unpool,num_outputs=64, kernel_size=3 )
         deconv3 = slim.convolution2d_transpose(deconv3,num_outputs=3, kernel_size=3,activation_fn=None)
         rec_x = tf.nn.sigmoid(deconv3)
 
@@ -70,7 +71,9 @@ def create_network():
 
     loss = recon_loss + latent_loss + regularization_loss
 
-    return {'x':x,  'loss':loss, 'rec_loss':recon_loss, 'latent_loss':latent_loss,'rec_x':rec_x , 'reg_loss':regularization_loss}
+    return {'x':x,  'loss':loss, 'rec_loss':recon_loss,
+            'latent_loss':latent_loss,'rec_x':rec_x , 'reg_loss':regularization_loss,
+            'glb_step':global_step}
 
 
 
@@ -78,7 +81,9 @@ def train():
 
     ops = create_network()
     X_train = Pill_Generator.get_batch(MyConfig.pill_images_path, batch_size=batch_size)
-    optimizer = tf.train.AdamOptimizer(learning_rate=1e-3).minimize(ops['loss'])
+    optimizer = tf.train.AdamOptimizer(learning_rate=1e-3).minimize(ops['loss'],global_step=ops['glb_step'])
+
+    saver = tf.train.Saver(max_to_keep=3)
 
     init = tf.initialize_all_variables()
     sess = tf.Session()
@@ -87,10 +92,11 @@ def train():
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-    fig = plt.figure(figsize=(10, 4))
+    fig = plt.figure(figsize=(8, 8))
     plt.ion()
 
     i = 0
+
     try:
         while not coord.should_stop():
 
@@ -99,19 +105,35 @@ def train():
                 _ = sess.run([optimizer],feed_dict={ops['x']: X_train_images})
 
 
-                if i % 50 == 0:
+                if i % 200 == 0:
                     cost, rec_x, rec_loss, latent_loss, reg_loss = sess.run(
                         [ops['loss'], ops['rec_x'], ops['rec_loss'], ops['latent_loss'], ops['reg_loss']],
                         feed_dict={ops['x']: X_train_images})
-                    print ('step: %04d' % (i), "cost=", "{:.4f}".format(cost))
-                    print('Rec loss: %.4f   Latent loss: %.4f  Reg loss: %.4f' % ( rec_loss, latent_loss, reg_loss))
-                    plt.subplot(121)
+                    logging.info('step: %04d' % (i), "cost= %.4f" % cost)
+                    logging.info('Rec loss: %.4f   Latent loss: %.4f  Reg loss: %.4f' % ( rec_loss, latent_loss, reg_loss))
+                    plt.subplot(221)
+                    plt.axis('off')
                     plt.imshow(X_train_images[0])
-                    plt.subplot(122)
+                    plt.subplot(222)
+                    plt.axis('off')
                     plt.imshow(rec_x[0])
+                    plt.pause(0.001)
+                    plt.subplot(223)
+                    plt.axis('off')
+                    plt.imshow(X_train_images[1])
+                    plt.subplot(224)
+                    plt.axis('off')
+                    plt.imshow(rec_x[1])
                     plt.pause(0.001)
 
                 i += 1
+
+                step = ops['glb_step'].eval(session=sess)
+                if step % 1000 == 0:
+                    ops['glb_step'].eval(session=sess)
+                    save_path = saver.save(sess, 'models/model.ckpt',step)
+                    logging.info("Model saved in file: %s" % save_path)
+                    plt.savefig('vis/'+str(step) +'.jpg', bbox_inches='tight')
 
     except tf.errors.OutOfRangeError:
         logging.info('Done training -- epoch limit reached')
@@ -125,6 +147,9 @@ def train():
 
 
 if __name__=='__main__':
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s. %(levelname)s %(module)s[%(funcName)s]: %(message)s',
+                        datefmt="%Y-%m-%d %H:%M:%S")
     os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     xs,ys = train()
 
